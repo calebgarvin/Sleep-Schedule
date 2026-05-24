@@ -353,11 +353,10 @@
     WW_NAP1_TO_NAP2:       150,  // Nap 1 wake  → Nap 2     (2h 30m)
     WW_NAP1_SHORT_TO_NAP2: 135,  // Nap 1 SHORT → Nap 2     (2h 15m, shorter because tired)
 
-    // At 7 months on a 2-nap schedule the LAST wake window is long — up to 4.5 hours.
-    // Bedtime is ANCHORED to 7:00 PM rather than computed from a fixed wake window.
-    // MIN = shortest acceptable gap before bed; MAX = threshold that triggers a catnap.
-    WW_NAP2_TO_BED_MIN:    150,  // 2h 30m — shortest reasonable last wake window
-    WW_NAP2_TO_BED_MAX:    270,  // 4h 30m — if gap would exceed this, suggest catnap
+    // The last wake window targets 4 hours → default 7:30 PM bedtime.
+    // Bedtime = Nap 2 end + 4h, capped at 7:30 PM.
+    // If Nap 2 end + 4h < 7:00 PM (i.e. Nap 2 ended before 3:00 PM), suggest catnap.
+    WW_FINAL:              240,  // 4h ideal final wake window
 
     WW_CATNAP_TO_BED:      120,  // Catnap wake → Bedtime   (2h — catnap is brief)
 
@@ -390,8 +389,8 @@
 
     // ── BEDTIME ──────────────────────────────────────────────
     BEDTIME_MIN:         { h: 18, m: 45 },  // 6:45 PM  — never before this
-    BEDTIME_IDEAL_START: { h: 19, m:  0 },  // 7:00 PM  — ideal window opens
-    BEDTIME_IDEAL_END:   { h: 19, m: 30 },  // 7:30 PM  — ideal window closes
+    BEDTIME_CATNAP_THRESHOLD: { h: 19, m: 0 },  // 7:00 PM — if 4h window falls below, suggest catnap
+    BEDTIME_GOAL:        { h: 19, m: 30 },  // 7:30 PM  — default target (4h after 3:30 PM wake)
     BEDTIME_LATE_WARN:   { h: 19, m: 45 },  // 7:45 PM  — flag as running late
 
     // ── TOTAL DAYTIME SLEEP TARGET ───────────────────────────
@@ -570,10 +569,13 @@
     //
     // The catnap is placed to end around 5:00 PM → bed at 7:00 PM (2h after).
 
-    const bedtimeIdealStart = cfgMins(C.BEDTIME_IDEAL_START);  // 7:00 PM
-    const bedtimeMin        = cfgMins(C.BEDTIME_MIN);          // 6:45 PM
+    const bedtimeGoal      = cfgMins(C.BEDTIME_GOAL);               // 7:30 PM
+    const bedtimeCatThresh = cfgMins(C.BEDTIME_CATNAP_THRESHOLD);   // 7:00 PM
+    const bedtimeMin       = cfgMins(C.BEDTIME_MIN);                // 6:45 PM
 
-    const needsCatnap = (nap2End + C.WW_NAP2_TO_BED_MAX < bedtimeIdealStart) || nap2Short;
+    // Suggest catnap when 4h wake window puts bedtime before 7:00 PM
+    // (i.e. Nap 2 ends before 3:00 PM), OR when Nap 2 was very short.
+    const needsCatnap = (nap2End + C.WW_FINAL < bedtimeCatThresh) || nap2Short;
 
     let lastSleepEnd = nap2End;
 
@@ -612,26 +614,29 @@
     if (needsCatnap) {
       bedMins = lastSleepEnd + C.WW_CATNAP_TO_BED;
     } else {
-      bedMins = Math.max(bedtimeIdealStart, nap2End + C.WW_NAP2_TO_BED_MIN);
+      // 4h wake window from Nap 2 end, capped at 7:30 PM goal.
+      // This naturally moves bedtime earlier when Nap 2 ends early.
+      bedMins = Math.min(nap2End + C.WW_FINAL, bedtimeGoal);
     }
     if (bedMins < bedtimeMin) bedMins = bedtimeMin;
 
-    const bdIdealEnd = cfgMins(C.BEDTIME_IDEAL_END);
     const bdLateWarn = cfgMins(C.BEDTIME_LATE_WARN);
 
     let bedStatus, bedMsg;
-    if (bedMins < bedtimeIdealStart) {
+    if (bedMins < bedtimeCatThresh) {
       bedStatus = 'early';
       bedMsg    = '💙 Running a bit early — wait until at least 6:45 PM';
-    } else if (bedMins <= bdIdealEnd) {
+    } else if (bedMins <= bedtimeGoal) {
       bedStatus = 'good';
-      bedMsg    = '✅ Right in the sweet spot — great day!';
+      bedMsg    = bedMins === bedtimeGoal
+        ? '✅ Right on target — 7:30 PM bedtime!'
+        : `✅ Good bedtime — aim for ${friendly(toStr(bedMins))}`;
     } else if (bedMins <= bdLateWarn) {
       bedStatus = 'slightly-late';
       bedMsg    = '🕯️ Slightly late — try to get him down by 7:30 PM';
     } else {
       bedStatus = 'late';
-      bedMsg    = '⚠️ Bedtime may run late — aim for 7:30 PM if possible';
+      bedMsg    = '⚠️ Bedtime running late — aim for 7:30 PM if possible';
     }
 
     // Total predicted daytime sleep
@@ -644,7 +649,7 @@
       type:            'bedtime',
       label:           'Bedtime 🌙',
       time:            bedMins,
-      note:            'Target window: 7:00–7:30 PM',
+      note:            'Target: 7:30 PM (adjusts earlier if Nap 2 ended early)',
       bedStatus,
       bedMsg,
       totalDaytimeMins,
@@ -869,9 +874,8 @@
   function onActualStartChange(e) {
     const i = parseInt(e.target.dataset.napStart, 10);
     actualNapStart[i] = e.target.value || null;
-    // Changing when he fell asleep doesn't invalidate other overrides —
-    // just recalculate with the new start time.
-    render();
+    // Debounced so mobile scroll wheel can settle before re-render.
+    debouncedRender();
   }
 
   function onActualWakeChange(e) {
@@ -885,7 +889,8 @@
       actualWake[j] = null;
     }
 
-    render();
+    // Debounced so mobile scroll wheel can settle before re-render.
+    debouncedRender();
   }
 
   function onClearStart(e) {
@@ -909,6 +914,20 @@
     actualWake     = [null, null];
     render();
   }
+
+  // ── Debounce helper ──────────────────────────────────────
+  // On mobile, the native time-picker scroll wheel fires 'change' events
+  // as the wheel spins. Without a debounce, each event triggers a full
+  // DOM re-render which steals focus and freezes the picker mid-scroll.
+  // A short delay lets the wheel settle before we re-render.
+  function debounce(fn, delay) {
+    let t;
+    return function(...args) {
+      clearTimeout(t);
+      t = setTimeout(() => fn.apply(this, args), delay);
+    };
+  }
+  const debouncedRender = debounce(render, 350);
 
   // ── Wire morning wake input ──────────────────────────────
   const mwInput = document.getElementById('morningWake');
