@@ -369,7 +369,8 @@
     NAP1_MAX:     75,   // Nap 1 cap:   1h 15m
 
     NAP2_TARGET:  120,  // Nap 2 ideal: 2h
-    NAP2_MAX:     150,  // Nap 2 cap:   2h 30m
+    NAP2_MAX:     150,  // Nap 2 cap:   2h 30m (but never past NAP2_LATEST_END)
+    NAP2_LATEST_END: { h: 16, m: 30 },  // Hard cap: never wake him after 4:30 PM
 
     CATNAP_DURATION: 20, // Optional catnap: 20 min
 
@@ -531,7 +532,9 @@
     const nap2ActualStartMins = toMins(nap2ActualStartStr);
     const nap2Start = (nap2ActualStartMins != null) ? nap2ActualStartMins : nap2Suggested;
 
-    const nap2PredEnd = nap2Start + Math.min(C.NAP2_TARGET, C.NAP2_MAX);
+    // "Wake up by" for Nap 2: capped at 4:30 PM so the last wake window stays 3–4h
+    const nap2LatestEnd = cfgMins(C.NAP2_LATEST_END);
+    const nap2PredEnd = Math.min(nap2Start + Math.min(C.NAP2_TARGET, C.NAP2_MAX), nap2LatestEnd);
 
     const nap2ActualWakeStr  = actualWake[1] || null;
     const nap2ActualWakeMins = toMins(nap2ActualWakeStr);
@@ -729,13 +732,13 @@
           </div>
         `;
 
-        // Predicted wake (based on actual start if entered, else suggested)
+        // "Wake him up by" — the latest he should sleep to protect the next wake window
         const predWakeNote = startFilled
-          ? `Based on actual fall-asleep time of ${friendly(startVal)}`
+          ? `If he fell asleep at ${friendly(startVal)}`
           : 'Based on suggested nap time';
         html += `
           <div class="predicted-row">
-            <div class="p-label">💭 Predicted wake:<br><span style="font-size:.8rem;color:#aaa;font-weight:400;">${predWakeNote}</span></div>
+            <div class="p-label">⏰ Wake him up by:<br><span style="font-size:.8rem;color:#aaa;font-weight:400;">${predWakeNote}</span></div>
             <div class="p-time">${friendly(toStr(ev.predEndMins))}</div>
           </div>
         `;
@@ -752,7 +755,7 @@
               class="${wakeFilled ? 'filled' : ''}"
               aria-label="Actual wake time for nap ${n}"
             />
-            <div class="hint">Only fill in if he woke earlier or later than predicted ↑</div>
+            <div class="hint">Only fill in if he woke at a different time than shown above ↑</div>
             ${wakeFilled ? `<button class="clear-btn" data-clear-wake="${ev.napIndex}">✕ Clear</button>` : ''}
           </div>
         `;
